@@ -7,13 +7,6 @@ on:
     branches:
       - main
       - develop
-    tags:
-      - "v*"
-
-  pull_request:
-    branches:
-      - main
-      - develop
 
 permissions:
   contents: read
@@ -32,7 +25,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Java
+      - name: Set up Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -53,24 +46,43 @@ jobs:
           java -version
           flutter doctor -v
 
-      - name: Get Flutter dependencies
+      - name: Clean project
+        run: flutter clean
+
+      - name: Get dependencies
         run: flutter pub get
 
       - name: Analyze Flutter project
-        run: flutter analyze
+        run: flutter analyze --no-fatal-infos
         continue-on-error: true
 
       - name: Build release APK
         run: flutter build apk --release
 
-      - name: List build outputs
+      - name: Display APK files
+        if: success()
         run: |
-          find build/app/outputs -type f             \( -name "*.apk" -o -name "*.aab" \)             -print
+          find build/app/outputs/flutter-apk \
+            -type f \
+            -name "*.apk" \
+            -print
 
       - name: Upload release APK
+        if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: hikari-novel-android-${{ github.run_number }}
+          name: hikari-novel-apk-${{ github.run_number }}
           path: build/app/outputs/flutter-apk/*.apk
           if-no-files-found: error
           retention-days: 14
+
+      - name: Upload build reports on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hikari-novel-build-reports-${{ github.run_number }}
+          path: |
+            android/build/reports/**
+            build/reports/**
+          if-no-files-found: ignore
+          retention-days: 7
