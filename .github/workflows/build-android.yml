@@ -6,24 +6,10 @@ on:
   push:
     branches:
       - main
-    paths:
-      - "android/**"
-      - "lib/**"
-      - "assets/**"
-      - "pubspec.yaml"
-      - "pubspec.lock"
-      - ".github/workflows/build-android.yml"
 
   pull_request:
     branches:
       - main
-    paths:
-      - "android/**"
-      - "lib/**"
-      - "assets/**"
-      - "pubspec.yaml"
-      - "pubspec.lock"
-      - ".github/workflows/build-android.yml"
 
 concurrency:
   group: android-build-${{ github.workflow }}-${{ github.ref }}
@@ -56,11 +42,178 @@ jobs:
         with:
           fetch-depth: 1
 
+      - name: Locate Flutter project
+        id: locate
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "===== Repository root ====="
+          pwd
+
+          echo "===== Repository files ====="
+          find . -maxdepth 3 -type f \
+            \( -name "pubspec.yaml" -o -name "gradlew" \) \
+            -print
+
+          PUBSPEC_PATH=$(find . \
+            -maxdepth 4 \
+            -type f \
+            -name "pubspec.yaml" \
+            -not -path "*/.pub-cache/*" \
+            -not -path "*/build/*" \
+            | head -n 1)
+
+          if [ -z "$PUBSPEC_PATH" ]; then
+            echo "::error::仓库中没有找到 pubspec.yaml。"
+            echo "::error::请确认 Flutter 项目文件已经提交到 GitHub。"
+            exit 1
+          fi
+
+          PROJECT_DIR=$(dirname "$PUBSPEC_PATH")
+          PROJECT_DIR=${PROJECT_DIR#./}
+
+          if [ "$PROJECT_DIR" = "." ]; then
+            PROJECT_DIR=""
+          fi
+
+          if [ -z "$PROJECT_DIR" ]; then
+            PROJECT_PATH="$GITHUB_WORKSPACE"
+          else
+            PROJECT_PATH="$GITHUB_WORKSPACE/$PROJECT_DIR"
+          fi
+
+          echo "project_dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
+          echo "project_path=$PROJECT_PATH" >> "$GITHUB_OUTPUT"
+
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+          echo "PROJECT_PATH=$PROJECT_PATH" >> "$GITHUB_ENV"
+
+          echo "Flutter project directory: $PROJECT_PATH"
+
       - name: Set up Java 17
         uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "17"
+          cache: gradle
+          cache-dependency-path: |
+            ${{ steps.locate.outputs.project_path }}/android/**/*.gradle*
+            ${{ steps.locate.outputs.project_path }}/android/gradle/wrapper/gradle-wrapper.properties
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.38.7"
+          channel: stable
+          cache: true
+
+      - name: Configure Flutter
+        shell: bash
+        run: |
+          flutter config --no-analytics
+          dart --disable-analytics || true
+          flutter config --enable-android
+
+      - name: Validate Flutter project
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "===== Project directory ====="
+          echo "$PROJECT_PATH"
+
+          echo "===== Project contents ====="
+          ls -la "$PROJECT_PATH"
+
+          if [ ! -f "$PROJECT_PATH/pubspec.yaml" ]; then
+            echo "::error::未找到 $PROJECT_PATH/pubspec.yaml"
+            exit 1
+          fi
+
+          if [ ! -d "$PROJECT_PATH/lib" ]; then
+            echo "::error::未找到 $PROJECT_PATH/lib"
+            exit 1
+          fi
+
+          if [ ! -d "$PROJECT_PATH/android" ]; then
+            echo "::error::未找到 Android 项目目录：$PROJECT_PATH/android"
+            echo "::error::请在本地执行 flutter create --platforms=android . 并提交 android 目录。"
+            exit 1
+          fi
+
+          if [ ! -f "$PROJECT_PATH/android/gradlew" ]; then
+            echo "::error::未找到 Gradle Wrapper：$PROJECT_PATH/android/gradlew"
+            echo "::error::请在本地执行 flutter create --platforms=android . 并提交生成的文件。"
+            exit 1
+          fi
+
+          chmod +x "$PROJECT_PATH/android/gradlew"
+
+      - name: Show environment information
+        shell: bash
+        working-directory: ${{ steps.locate.outputs.project_path }}
+        run: |
+          echo "===== Flutter ====="
+          flutter --version
+
+          echo "===== Dart ====="
+          dart --version
+
+          echo "===== Java ====="
+          java -version
+
+          echo "===== Gradle ====="
+          ./android/gradlew --version
+
+          echo "===== Memory ====="
+          free -h
+
+          echo "===== Disk ====="
+          df -h
+
+      - name: Run Flutter Doctor
+        shell: bash
+        working-directory: ${{ steps.locate.outputs.project_path }}
+        run: flutter doctor -v
+
+      - name: Get Flutter dependencies
+        shell: bash
+        working-directory: ${{ steps.locate.outputs.project_path }}
+        run: |
+          set -euo pipefail
+
+          if [ -f "pubspec.lock" ]; then
+            flutter pub get --enforce-lockfile
+          else
+            flutter pub get
+          fi
+
+      - name: Build ARM64 Release APK
+        shell: bash
+        working-directory: ${{ steps.locate.outputs.project_path }}
+        timeout-minutes: 35
+        run: |
+          set -euo pipefail
+          set -o pipefail
+
+          mkdir -p build-logs
+
+          flutter build apk \
+            --release \
+            --target-platform android-arm64 \
+            --split-per-abi \
+            --no-pub \
+            --verbose \
+            2>&1 | tee build-logs/flutter-build.log
+
+      - name: Verify generated APK
+        id: verify
+        if: success()
+        shell: bash
+        working-directory: ${{ steps.locate.outputs.project_path }}
+        run: |
+          set -euo pipefail          java-version: "17"
           cache: gradle
 
       - name: Set up Flutter
